@@ -83,7 +83,6 @@ def read_frame(frame_receiver):
 
         frame.add_command(command)
 
-
         # ------------
         # Read Headers
         # ------------
