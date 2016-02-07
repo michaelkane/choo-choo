@@ -1,11 +1,13 @@
+import sys
 import logging
 import re
 import socket
 import time
+import zlib
 
 import config
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.ERROR)
 logger = logging.getLogger(__name__)
 
 
@@ -49,22 +51,28 @@ def create_frame(command, headers={}, body=None):
 class Frame():
     def __init__(self):
         self.command = None
-        self.headers = None
+        self.headers = {}
         self.body = None
 
     def add_command(self, command):
-        self.command = command
+        self.command = command.decode(ENCODING)
 
     def add_header(self, name, value):
+        n = name.decode(ENCODING)
+        v = value.decode(ENCODING)
+
         # Only the first instance of a given header is considered.  (see spec)
-        if name not in headers:
-            self.headers[name] = value
+        if n not in self.headers:
+            self.headers[n] = v
 
     def add_body(self, body):
         self.body = body
 
+    def __repr__(self):
+        return '<Frame {} {}>'.format(self.command, self.headers)
 
-def read_frame(frame_receiver):
+
+def read_frame(frame_processor=None):
     while True:
         frame = Frame()
 
@@ -76,11 +84,16 @@ def read_frame(frame_receiver):
 
         while True:
             octal = (yield)
-            logger.debug('read: {}'.format(octal))
 
-            if octal is not LINE_FEED:
-                command.append(octal)
+            if octal is LINE_FEED:
+                # Clear any leading line feeds (messy)
+                if not command:
+                    continue
+                break
 
+            command.append(octal)
+
+        logger.debug('read command: {}'.format(command))
         frame.add_command(command)
 
         # ------------
@@ -98,10 +111,11 @@ def read_frame(frame_receiver):
 
             # Read the header name
             while True:
-                if octal is COLON:
-                    break
-                name.append(value)
+                name.append(octal)
                 octal = (yield)
+                if octal is COLON:
+                    octal = (yield)
+                    break
 
             # Read the header value
             while True:
@@ -110,37 +124,55 @@ def read_frame(frame_receiver):
                 value.append(octal)
                 octal = (yield)
 
+            logger.debug('read header: {}:{}'.format(name, value))
             frame.add_header(name, value)
+
+            name = bytearray()
+            value = bytearray()
 
         # ---------
         # Read Body
         # ---------
         logger.debug('reading body')
         body = bytearray()
+        body_read = False
 
-        while True:
-            octal = (yield)
-            if octal is not NULL:
+        # Read specific length
+        if 'content-length' in frame.headers.keys():
+            bytes_remaining = int(frame.headers['content-length'])
+
+            while bytes_remaining:
+                octal = (yield)
+                bytes_remaining -= 1
                 body.append(octal)
 
+            body_read = True
+
+        # Read till NULL
+        while True:
+            octal = (yield)
+
+            if octal is NULL:
+                break
+
+            # Discard data if we've already read body as per content-length
+            if body_read:
+                continue
+
+            body.append(octal)
+
+        logger.debug('read body: {}'.format(body))
         frame.add_body(body)
 
         # ----
         # Done
         # ----
-        frame_reciever.send(frame)
-
-        # TODO: Clear following line feeds
+        if frame_processor:
+            frame_processor(frame)
 
 
 class ProtocolError(Exception):
     pass
-
-
-def frame_reciever():
-    while True:
-        frame = (yield)
-        logger.debug(frame)
 
 
 def main():
@@ -160,16 +192,36 @@ def main():
     )
     sock.sendall(connect_frame)
 
-    # reciever = frame_reciever()
-    # reciever.send(None)
+    def process_frame(frame):
+        logger.info(frame)
+        if frame.command == 'MESSAGE':
+            sys.stdout.buffer.write(frame.body)
 
-    # unwrapper = read_frame(reciever)
-    #unwrapper.send(None)
+    unwrapper = read_frame(frame_processor=process_frame)
+    unwrapper.send(None)
+
+    for byte in sock.recv(BUFFER_SIZE):
+        unwrapper.send(byte)
+
+    subscribe_frame = create_frame(
+        'SUBSCRIBE',
+        {
+            'id': '0',
+            'destination': config.STOMP_QUEUE,
+            'ack': 'auto',
+        }
+    )
+    sock.sendall(subscribe_frame)
 
     # for byte in sock.recv(BUFFER_SIZE):
     #     unwrapper.send(byte)
 
-    logger.debug(sock.recv(BUFFER_SIZE))
+    # run_till = time.time() + 10
+    # while time.time() < run_till:
+    while True:
+        buff = sock.recv(BUFFER_SIZE)
+        for byte in buff:
+            unwrapper.send(byte)
 
     sock.shutdown(socket.SHUT_RDWR)
     sock.close()
