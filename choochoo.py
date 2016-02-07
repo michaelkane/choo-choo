@@ -3,7 +3,8 @@ import logging
 import re
 import socket
 import time
-import zlib
+import gzip
+from xml.etree import ElementTree
 
 import config
 
@@ -195,7 +196,12 @@ def main():
     def process_frame(frame):
         logger.info(frame)
         if frame.command == 'MESSAGE':
-            sys.stdout.buffer.write(frame.body)
+            # sys.stdout.buffer.write(frame.body)
+            raw = gzip.decompress(frame.body)
+            root = ElementTree.fromstring(raw)
+            print('-' * 79)
+            for node in root.iter():
+                print('<{} {}>{}</>'.format(node.tag, node.attrib, node.text))
 
     unwrapper = read_frame(frame_processor=process_frame)
     unwrapper.send(None)
