@@ -101,10 +101,10 @@ def read_frame(frame_processor=None):
         # Read Headers
         # ------------
         logger.debug('reading headers')
-        name = bytearray()
-        value = bytearray()
 
         while True:
+            name = bytearray()
+            value = bytearray()
             octal = (yield)
 
             if octal is LINE_FEED:
@@ -127,9 +127,6 @@ def read_frame(frame_processor=None):
 
             logger.debug('read header: {}:{}'.format(name, value))
             frame.add_header(name, value)
-
-            name = bytearray()
-            value = bytearray()
 
         # ---------
         # Read Body
