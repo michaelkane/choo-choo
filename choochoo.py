@@ -8,7 +8,7 @@ from xml.etree import ElementTree
 
 import config
 
-logging.basicConfig(level=logging.ERROR)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
@@ -176,9 +176,41 @@ class ProtocolError(Exception):
 def main():
     host, port = re.match('.*://(.+):(\d+)', config.STOMP_BROKER_URI).groups()
 
+    # Create the tcp connection
     sock = socket.create_connection((host, port))
     logger.debug(sock)
 
+    # Handler for incoming frames
+    def process_frame(frame):
+        logger.info(frame)
+
+        if frame.command == 'CONNECTED':
+            # Subscribe to the queue
+            subscribe_frame = create_frame(
+                'SUBSCRIBE',
+                {
+                    'id': '0',
+                    'destination': config.STOMP_QUEUE,
+                    'ack': 'auto',
+                }
+            )
+            sock.sendall(subscribe_frame)
+
+        elif frame.command == 'MESSAGE':
+            # sys.stdout.buffer.write(frame.body)
+            raw = gzip.decompress(frame.body)
+            root = ElementTree.fromstring(raw)
+            print('-' * 79)
+            for node in root.iter():
+                print('<{} {}>{}</>'.format(node.tag, node.attrib, node.text))
+
+        else:
+            raise Exception('Unhandles command: {}'.format(frame.command))
+
+    unwrapper = read_frame(frame_processor=process_frame)
+    unwrapper.send(None)
+
+    # Send the initial command to connect
     connect_frame = create_frame(
         'CONNECT',
         {
@@ -190,42 +222,13 @@ def main():
     )
     sock.sendall(connect_frame)
 
-    def process_frame(frame):
-        logger.info(frame)
-        if frame.command == 'MESSAGE':
-            # sys.stdout.buffer.write(frame.body)
-            raw = gzip.decompress(frame.body)
-            root = ElementTree.fromstring(raw)
-            print('-' * 79)
-            for node in root.iter():
-                print('<{} {}>{}</>'.format(node.tag, node.attrib, node.text))
-
-    unwrapper = read_frame(frame_processor=process_frame)
-    unwrapper.send(None)
-
-    for byte in sock.recv(BUFFER_SIZE):
-        unwrapper.send(byte)
-
-    subscribe_frame = create_frame(
-        'SUBSCRIBE',
-        {
-            'id': '0',
-            'destination': config.STOMP_QUEUE,
-            'ack': 'auto',
-        }
-    )
-    sock.sendall(subscribe_frame)
-
-    # for byte in sock.recv(BUFFER_SIZE):
-    #     unwrapper.send(byte)
-
-    # run_till = time.time() + 10
-    # while time.time() < run_till:
+    # Start listening on the socket (responding if necessary)
     while True:
         buff = sock.recv(BUFFER_SIZE)
         for byte in buff:
             unwrapper.send(byte)
 
+    # Obviously not getting run at the moment...
     sock.shutdown(socket.SHUT_RDWR)
     sock.close()
 
